@@ -1,4 +1,4 @@
-/* LORD of ROBOTS - CAMRON - 202304080040
+/* LORD of ROBOTS - LoR CAMRON - 202304080040
   This code is an ESP32-based camera robot controller that enables users to control a robot's movement and an LED light via a web interface while streaming live video from the onboard camera. The code includes:
     1. Necessary libraries and pin definitions for the ESP32 camera and robot control.
     2. WiFi configuration to connect to a network.
@@ -20,7 +20,7 @@
 #include <esp_system.h>
 
 // Version control
-const String Version = "0.1.0";
+const String Version = "0.1.1";
 
 // Pin definitions and other constants
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -444,7 +444,7 @@ void setup() {
 
 
 
-  Serial.println("System Ready! Version = " + Version + " : Robot ID = " + ssid_with_mac + " : Password = " + SystemPassword + "\n");
+  Serial.println("CAMRON System Ready! Version = " + Version + " : Robot ID = " + ssid_with_mac + " : Password = " + SystemPassword + "\n");
 
   // Start streaming web server
   startCameraServer();
