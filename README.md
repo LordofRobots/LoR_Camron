@@ -1,6 +1,6 @@
 # LoR_Camron
 
-This Arduino code is for a module that is a companion to the LoR_Core module designed to run on an ESP32cam board for controlling a robot (named "CAMRON") via a web interface. It serves a webpage over a WiFi access point that enables viewing the robot's camera feed and teleoperating the robot through on-screen buttons or keyboard input.
+This Arduino code is for a module that is a companion to the LoR_Core module (with LoR_Core_SerialControl loaded) designed to run on an ESP32cam board for controlling a robot (named "CAMRON") via a web interface. It serves a webpage over a WiFi access point that enables viewing the robot's camera feed and teleoperating the robot through on-screen buttons or keyboard input.
 
 1. **Libraries and Definitions**: It begins by including necessary libraries related to the ESP32, HTTP server, WiFi, and the ESP32's camera. It also defines various pin numbers used to interface with the camera and the LED.
 
