@@ -1,26 +1,20 @@
-/* LORD of ROBOTS - LoR CAMRON - 202304080040
-  This code is an ESP32-based camera robot controller that enables users to control a robot's movement and an LED light via a web interface while streaming live video from the onboard camera. The code includes:
-    1. Necessary libraries and pin definitions for the ESP32 camera and robot control.
-    2. WiFi configuration to connect to a network.
-    3. An HTML web page with a control interface for robot movement (forward, backward, left, right) and LED light control (on/off).
-    4. JavaScript code for sending commands to the robot based on user input and keyboard events.
-    5. HTTP handlers for serving the web page, processing robot movement commands, and streaming the camera feed.
-    6. Functions for starting the camera server and converting MAC addresses to string format.
-    7. The Arduino setup function, which initializes the serial communication, camera configuration, camera sensor settings, and WiFi connection.
-    8. The Arduino loop function, which listens for incoming connections and broadcasts the device's IP address.
-  Overall, this code allows users to control a robot with an ESP32-based camera over a web interface, while also viewing the live video stream from the robot's camera.
+/* LORD of ROBOTS - LoR CAMRON - 202304080040 
+    - connect to "CAMRON-FFFFFF" wifi access point ("FFFFFF" = the unique ID of the board)
+    - use password obtained in serial monitor at startup
+    - in a brower on pc or mobile navigate to "http://robot.local"
+    - view robot POV and teleop with keys or buttons
 */
+
+// Include necessary libraries
 #include "esp_camera.h"
-#include <WiFi.h>
 #include "img_converters.h"
 #include "soc/soc.h"           // disable brownout problems
 #include "soc/rtc_cntl_reg.h"  // disable brownout problems
 #include "esp_http_server.h"
 #include <ESPmDNS.h>
+#include <WiFi.h>
 #include <esp_system.h>
-
-// Version control
-const String Version = "0.1.1";
+#include "esp_wifi.h"
 
 // Pin definitions and other constants
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -40,28 +34,33 @@ const String Version = "0.1.1";
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
-
 #define LED_OUTPUT 4
+
+// Version control
+const String Version = "V0.2.0";
 
 // WiFi configuration of SSID
 const char *ssid = "CAMRON-";
 
+// Global variables for HTTP server instances
+static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char *_STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+httpd_handle_t camera_httpd = NULL;
+httpd_handle_t stream_httpd = NULL;
+
 // Function to convert MAC address to string format. MAC address of the ESP32 in format "XX:XX:XX:XX:XX:XX"
 String UniqueID() {
-  // Get unique MAC address
   uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-
-  // Save MAC address to string
-  char buffer[13];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);  // Get unique MAC address
+  char buffer[13];                      // Save MAC address to string
   sprintf(buffer, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   String uniqueID = buffer;
   uniqueID = uniqueID.substring(6, 12);  // limit to last 6 digits
-
   return uniqueID;
 }
 
-const String SystemPassword = String(PasswordGen());
 String PasswordGen() {
   String uniqueID = UniqueID();
   String mixedString = "";
@@ -72,114 +71,136 @@ String PasswordGen() {
     mixedValue %= 16;  // limit to single hex digit
     mixedString += (char)((mixedValue < 10) ? ('0' + mixedValue) : ('A' + mixedValue - 10));
   }
-  
   mixedString = "LoR" + mixedString;
   return mixedString;
 }
-
-// Global variables for HTTP server instances
-static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
-static const char *_STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
-static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
-
-httpd_handle_t camera_httpd = NULL;
-httpd_handle_t stream_httpd = NULL;
+const String SystemPassword = String(PasswordGen());
 
 // Web page (HTML, CSS, JavaScript) for controlling the robot
 static const char PROGMEM INDEX_HTML[] = R"rawliteral(
   <html>
-    <head>
-      <title>LORD of ROBOTS</title>
-      <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1" >
-      <style>
-        body { font-family: Arial; text-align: center; margin:0px auto; padding-top: 30px;}
-        .button {
-          background-color: #2f4468;
-          width: 100px;
-          height: 80px;
-          border: none;
-          color: white;
-          font-size: 20px;
-          font-weight: bold;
-          text-align: center;
-          text-decoration: none;
-          border-radius: 10px;
-          display: inline-block;
-          margin: 6px 6px;
-          cursor: pointer;
-          -webkit-touch-callout: none;
-          -webkit-user-select: none;
-          -khtml-user-select: none;
-          -moz-user-select: none;
-          -ms-user-select: none;
-          user-select: none;
-          -webkit-tap-highlight-color: rgba(0,0,0,0);
-        }
-        img { 
-          width: auto ;
-          max-width: 100% ;
-          height: auto ; 
-        }
-      </style>
-    </head>
-    <body bgcolor="black">
-      <h1><p style="color:#FFFFFF";>CAMRON MiniBot</p></h1>
-      <img src="" id="photo" >
-      <center>
-        <table>
-          <tr><td colspan="3" align="center"><button class="button" onmousedown="sendData('forward');" ontouchstart="sendData('forward');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">Forward</button></td></tr>
-          <tr><td align="center"><button class="button" onmousedown="sendData('left');" ontouchstart="sendData('left');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">Left</button></td><td align="center"><button class="button" onmousedown="sendData('stop');" ontouchstart="sendData('stop');">Stop</button></td><td align="center"><button class="button" onmousedown="sendData('right');" ontouchstart="sendData('right');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">Right</button></td></tr>
-          <tr><td align="center"><button class="button" onmousedown="sendData('ledon');" ontouchstart="sendData('ledon');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">LED ON</button></td><td align="center"><button class="button" onmousedown="sendData('backward');" ontouchstart="sendData('backward');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">Backward</button></td><td align="center"><button class="button" onmousedown="sendData('ledoff');" ontouchstart="sendData('ledoff');" onmouseup="sendData('stop');" ontouchend="sendData('stop');">LED OFF</button></td></tr>                   
-        </table>
-      </center>
-      <script>
-        function sendData(x) {
-          var xhr = new XMLHttpRequest();
-          xhr.open("GET", "/action?go=" + x, true);
-          xhr.send();
-        }
+  <head>
+    <title>LORD of ROBOTS</title>
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1" >
+    <style>
+      body { font-family: Arial; text-align: center; margin:0 auto; padding-top: 30px;}
+      .button {
+        background-color: #2f4468;
+        width: 100px;
+        height: 80px;
+        border: none;
+        color: white;
+        font-size: 20px;
+        font-weight: bold;
+        text-align: center;
+        text-decoration: none;
+        border-radius: 10px;
+        display: inline-block;
+        margin: 6px 6px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: rgba(0,0,0,0);
+        -webkit-user-select: none; /* Chrome, Safari, Opera */
+        -moz-user-select: none; /* Firefox all */
+        -ms-user-select: none; /* IE 10+ */
+        user-select: none; /* Likely future */
+      }
+      img { width: auto; max-width: 100%; height: auto; }
+      #buttons { text-align: center; }
+    </style>
+  </head>
+  <body style="background-color:black;" oncontextmenu="return false;">
+    <h1 style="color:white">CAMRON MiniBot</h1>
+    <img src="" id="photo">
+    <div id="buttons">
+      <button class="button" onpointerdown="sendData('forward')" onpointerup="releaseData()">Forward</button><br>
+      <button class="button" onpointerdown="sendData('left')" onpointerup="releaseData()">Left</button>
+      <button class="button" onpointerdown="sendData('stop')" onpointerup="releaseData()">Stop</button>
+      <button class="button" onpointerdown="sendData('right')" onpointerup="releaseData()">Right</button><br>
+      <button class="button" onpointerdown="sendData('ledon')" onpointerup="releaseData()">LED ON</button>
+      <button class="button" onpointerdown="sendData('backward')" onpointerup="releaseData()">Backward</button>
+      <button class="button" onpointerdown="sendData('ledoff')" onpointerup="releaseData()">LED OFF</button>
+ </div>
+    <script>
+      var isButtonPressed = false; // Add this flag
 
-        document.addEventListener('keydown', function(event) {
-          if (event.code === 'ArrowUp') {
-            sendData('forward');
-          } else if (event.code === 'ArrowLeft') {
-            sendData('left');
-          } else if (event.code === 'ArrowDown') {
-            sendData('backward');
-          } else if (event.code === 'ArrowRight') {
-            sendData('right');
-          } else if (event.code === 'KeyW') {
-            sendData('forward');
-          } else if (event.code === 'KeyA') {
-            sendData('left');
-          } else if (event.code === 'KeyS') {
-            sendData('backward');
-          } else if (event.code === 'KeyD') {
-            sendData('right');
-          } else if (event.code === 'KeyL') {
-            sendData('ledon');
-          } else if (event.code === 'KeyO') {
-            sendData('ledoff');
-          }
-        });
-        document.addEventListener('keyup', function(event) {
-          if (event.code.startsWith('Arrow')) {
-            sendData('stop');
-          } else if (event.code === 'KeyW') {
-            sendData('stop');
-          } else if (event.code === 'KeyA') {
-            sendData('stop');
-          } else if (event.code === 'KeyS') {
-            sendData('stop');
-          } else if (event.code === 'KeyD') {
-            sendData('stop');
-          }
-        });      
-        window.onload = document.getElementById("photo").src = window.location.href.slice(0, -1) + ":81/stream";
-      </script>
-    </body>
-  </html>
+      function sendData(x) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/action?go=" + x, true);
+        xhr.send();
+      }
+
+      function releaseData() {
+        isButtonPressed = false; // A button has been released
+        sendData('stop');
+      }
+
+      const keyMap = {
+        'ArrowUp': 'forward',
+        'ArrowLeft': 'left',
+        'ArrowDown': 'backward',
+        'ArrowRight': 'right',
+        'KeyW': 'forward',
+        'KeyA': 'left',
+        'KeyS': 'backward',
+        'KeyD': 'right',
+        'KeyL': 'ledon',
+        'KeyO': 'ledoff'
+      };
+
+      document.addEventListener('keydown', function(event) {
+        if (!isButtonPressed) { // Only send data if no button is being pressed
+          const action = keyMap[event.code];
+          if (action) sendData(action);
+          isButtonPressed = true; // A button has been pressed
+        }
+      });
+
+      document.addEventListener('keyup', function(event) {
+         releaseData();
+      });
+
+      window.onload = function() {
+        document.getElementById("photo").src = window.location.href.slice(0, -1) + ":81/stream";
+      }
+    </script>
+  </body>
+</html>
 )rawliteral";
+
+// Function to start the camera server
+void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  httpd_uri_t index_uri = {
+    .uri = "/",
+    .method = HTTP_GET,
+    .handler = index_handler,
+    .user_ctx = NULL
+  };
+
+  httpd_uri_t cmd_uri = {
+    .uri = "/action",
+    .method = HTTP_GET,
+    .handler = cmd_handler,
+    .user_ctx = NULL
+  };
+  httpd_uri_t stream_uri = {
+    .uri = "/stream",
+    .method = HTTP_GET,
+    .handler = stream_handler,
+    .user_ctx = NULL
+  };
+  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(camera_httpd, &index_uri);
+    httpd_register_uri_handler(camera_httpd, &cmd_uri);
+  }
+  config.server_port += 1;
+  config.ctrl_port += 1;
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  }
+}
+
 
 // HTTP handler for serving the web page
 static esp_err_t index_handler(httpd_req_t *req) {
@@ -242,7 +263,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res != ESP_OK) {
       break;
     }
-    //delay(20);
+    vTaskDelay(40 / portTICK_PERIOD_MS);
   }
   return res;
 }
@@ -302,7 +323,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     Serial.println("Stop");
     res = -1;
   }
-  Serial.println("\n");
+  //Serial.println("\n");
 
   if (res) {
     return httpd_resp_send_500(req);
@@ -312,38 +333,24 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   return httpd_resp_send(req, NULL, 0);
 }
 
-// Function to start the camera server
-void startCameraServer() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.server_port = 80;
-  httpd_uri_t index_uri = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = index_handler,
-    .user_ctx = NULL
-  };
 
-  httpd_uri_t cmd_uri = {
-    .uri = "/action",
-    .method = HTTP_GET,
-    .handler = cmd_handler,
-    .user_ctx = NULL
-  };
-  httpd_uri_t stream_uri = {
-    .uri = "/stream",
-    .method = HTTP_GET,
-    .handler = stream_handler,
-    .user_ctx = NULL
-  };
-  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
-    httpd_register_uri_handler(camera_httpd, &index_uri);
-    httpd_register_uri_handler(camera_httpd, &cmd_uri);
-  }
-  config.server_port += 1;
-  config.ctrl_port += 1;
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-    httpd_register_uri_handler(stream_httpd, &stream_uri);
-  }
+void WifiSetup() {
+  // Wi-Fi connection
+  // Set up access point with SSID "Camron" + MAC address
+  WiFi.mode(WIFI_AP);
+  esp_wifi_set_max_tx_power(78);
+
+  String ssid_with_mac = ssid + UniqueID();
+  unsigned long seed = UniqueID().substring(UniqueID().length() - 6).toInt();  // Assuming UniqueID has at least 8 characters
+  randomSeed(seed);
+  int Channel = random(1, 11);
+  WiFi.softAP(ssid_with_mac.c_str(), SystemPassword, Channel);
+  // Set up mDNS responder
+  if (!MDNS.begin("robot")) Serial.println("Error setting up MDNS responder!");
+  MDNS.addService("http", "tcp", 80);
+  Serial.println("WiFi start");
+  delay(3000);
+  Serial.println("CAMRON System Ready! Version = " + Version + " : Robot ID = " + ssid_with_mac + " : Password = " + SystemPassword + "\n");
 }
 
 // Arduino setup function
@@ -381,13 +388,13 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Set frame size and quality based on available memory
-  if (psramFound()) {
-    config.frame_size = FRAMESIZE_XGA;  // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
+
+  if (psramFound()) {                   // Set frame size and quality based on available memory
+    config.frame_size = FRAMESIZE_SVGA;  // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
     config.jpeg_quality = 40;           //10-63 lower number means higher quality
-    config.fb_count = 2;
+    config.fb_count = 1;                // frame buffer count
   } else {
-    config.frame_size = FRAMESIZE_XGA;
+    config.frame_size = FRAMESIZE_SVGA;
     config.jpeg_quality = 40;
     config.fb_count = 1;
   }
@@ -416,7 +423,7 @@ void setup() {
   s->set_gain_ctrl(s, 1);                   // 0 = disable , 1 = enable
   s->set_agc_gain(s, 0);                    // 0 to 30
   s->set_gainceiling(s, (gainceiling_t)0);  // 0 to 6
-  s->set_bpc(s, 0);                         // 0 = disable , 1 = enable
+  s->set_bpc(s, 1);                         // 0 = disable , 1 = enable
   s->set_wpc(s, 1);                         // 0 = disable , 1 = enable
   s->set_raw_gma(s, 1);                     // 0 = disable , 1 = enable
   s->set_lenc(s, 1);                        // 0 = disable , 1 = enable
@@ -426,30 +433,13 @@ void setup() {
   s->set_colorbar(s, 0);                    // 0 = disable , 1 = enable
 
 
-  // Wi-Fi connection
-  // Set up access point with SSID "Camron" + MAC address
+  WifiSetup();
 
-  WiFi.mode(WIFI_AP);
-  String ssid_with_mac = ssid + UniqueID();
-  WiFi.softAP(ssid_with_mac.c_str(), SystemPassword);
-
-  // Set up mDNS responder
-  if (!MDNS.begin("robot")) {
-    Serial.println("Error setting up MDNS responder!");
-  }
-  MDNS.addService("http", "tcp", 80);
-
-  Serial.println("WiFi start");
-  delay(3000);
-
-
-
-  Serial.println("CAMRON System Ready! Version = " + Version + " : Robot ID = " + ssid_with_mac + " : Password = " + SystemPassword + "\n");
 
   // Start streaming web server
   startCameraServer();
 }
 
-// Arduino main loop
 void loop() {
+  // Loop function here...
 }
